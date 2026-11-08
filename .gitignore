@@ -1,0 +1,31 @@
+# Secrets locaux (seul le modèle .env.example est versionné)
+.env
+.env.*
+!.env.example
+
+# Instructions locales de l'assistant de code, non publiées
+CLAUDE.md
+.claude/
+
+# Générés par Airflow (airflow-init / exécution)
+logs/
+config/airflow.cfg
+
+# Données : elles vivent dans MinIO, jamais dans le dépôt
+*.parquet
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Éditeurs et système
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

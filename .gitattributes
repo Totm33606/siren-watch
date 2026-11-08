@@ -1,0 +1,4 @@
+# Fins de ligne LF pour tous les fichiers texte, quel que soit le réglage
+# core.autocrlf du poste : le code, le Makefile et .env (généré par sed depuis
+# .env.example) sont lus par des conteneurs et des outils Linux.
+* text=auto eol=lf

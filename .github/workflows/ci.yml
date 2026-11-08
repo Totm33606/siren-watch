@@ -1,0 +1,64 @@
+# Continuous integration: runs on every push to main and on every pull request.
+# Two independent jobs, so a slow Docker build never hides a lint or unit-test failure.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch cancels the run already in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      # --locked: fail if uv.lock is out of date with pyproject.toml.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: make lint
+
+      # Unit tests only: fixtures and a simulated S3 (moto), no network, no Docker.
+      - name: Unit tests
+        run: make test
+
+  dag-integrity:
+    name: Docker image and DAG integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same path as a fresh clone: `make .env` copies the template and generates secrets.
+      # On Linux, the Airflow containers must run with the runner's UID to write to the
+      # mounted folders (logs/, config/), hence AIRFLOW_UID, which overrides .env.
+      - name: Prepare the environment
+        run: |
+          make .env
+          mkdir -p logs config plugins
+          echo "AIRFLOW_UID=$(id -u)" >> "$GITHUB_ENV"
+
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
+
+      - name: Build the Airflow image
+        run: docker compose build airflow-cli
+
+      # Parses dags/ with Airflow itself, inside the image that runs in production.
+      - name: DAG integrity tests
+        run: make test-dags

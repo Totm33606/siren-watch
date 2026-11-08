@@ -1,0 +1,291 @@
+# SirenWatch — Airflow 3.4.0 (LocalExecutor) + MinIO
+#
+# Base : docker-compose.yaml officiel d'Airflow 3.4.0
+#   https://airflow.apache.org/docs/apache-airflow/3.4.0/docker-compose.yaml
+# Adaptations (détaillées dans les commentaires ci-dessous) :
+#   - CeleryExecutor -> LocalExecutor : suppression de redis, airflow-worker, flower
+#     et des variables AIRFLOW__CELERY__*.
+#   - Suppression de airflow-triggerer (aucun opérateur "deferrable" en V1).
+#   - DAG d'exemple désactivés.
+#   - Secrets (JWT, Fernet, compte admin) lus depuis .env, sans valeur par défaut en dur.
+#   - Ajout de MinIO (stockage S3) et d'un service one-shot qui crée le bucket.
+#
+# Toutes les variables viennent de .env (copié depuis .env.example par `make up`).
+
+x-airflow-common:
+  &airflow-common
+  # Image construite par le Dockerfile du projet : apache/airflow:3.4.0 + le paquet
+  # sirenwatch (src/). `image:` donne un nom à l'image construite, partagée par tous
+  # les services Airflow ; `make up` la reconstruit (--build) si src/ a changé.
+  build:
+    context: .              # dossier envoyé à Docker (filtré par .dockerignore)
+    dockerfile: Dockerfile  # la recette de l'image (valeur par défaut, écrite pour être visible)
+  image: sirenwatch-airflow:3.4.0
+  env_file:
+    - ${ENV_FILE_PATH:-.env}
+  environment:
+    &airflow-common-env
+    # LocalExecutor : le scheduler lance les tâches comme sous-processus locaux.
+    # Pas besoin de broker (Redis) ni de workers séparés pour un seul DAG.
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    # Identifiants Postgres laissés en dur comme dans le fichier officiel : la base
+    # n'est joignable que depuis le réseau Docker interne (aucun port publié).
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY:-}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    # Airflow 3 : les tâches parlent à l'API server via l'"Execution API" (et non plus
+    # directement à la base). Les jetons sont signés avec ce secret JWT, qui doit être
+    # identique sur tous les composants. `:?` fait échouer compose s'il manque.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:?définir AIRFLOW__API_AUTH__JWT_SECRET dans .env}
+    AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    # À n'utiliser que pour un test rapide ; sinon étendre l'image (Dockerfile).
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    # --- Accès S3 pour le code des tâches ---
+    # Depuis les conteneurs, MinIO est joignable par son nom de service `minio`.
+    # Depuis le poste (DuckDB), c'est localhost:9000 : d'où la surcharge ici de la
+    # valeur de .env. Passer à S3 réel = changer ces variables, rien d'autre.
+    SIRENWATCH_S3_ENDPOINT_URL: http://minio:9000
+    # Identifiants S3 : AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY et AWS_DEFAULT_REGION
+    # arrivent tels quels par env_file (.env), comme sur le poste. Ce sont les noms
+    # standard lus automatiquement par boto3. Ils ne sont pas dérivés de MINIO_ROOT_*,
+    # qui ne sert qu'au serveur MinIO.
+  volumes:
+    - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
+    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
+    - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
+    - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+  # UID hôte + GID 0 : les fichiers écrits dans logs/ restent lisibles sur l'hôte.
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    # Publié sur 127.0.0.1 seulement : l'interface n'est joignable que depuis ce poste,
+    # pas depuis le réseau local (par défaut, Docker publie sur toutes les interfaces).
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+      # Avec LocalExecutor, les tâches tournent dans ce conteneur : il a besoin de
+      # MinIO (bucket créé) et de l'API server (Execution API).
+      minio-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Service one-shot : migration de la base, création du compte admin, création
+  # des dossiers partagés avec les bons droits. Identique au fichier officiel.
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    # yamllint disable rule:line-length
+    command:
+      - -c
+      - |
+        if [[ -z "${AIRFLOW_UID}" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
+          echo "If you are on Linux, you SHOULD follow the instructions below to set "
+          echo "AIRFLOW_UID environment variable, otherwise files will be owned by root."
+          echo "For other operating systems you can get rid of the warning with manually created .env file:"
+          echo "    See: https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#setting-the-right-airflow-user"
+          echo
+          export AIRFLOW_UID=$$(id -u)
+        fi
+        one_meg=1048576
+        mem_available=$$(($$(getconf _PHYS_PAGES) * $$(getconf PAGE_SIZE) / one_meg))
+        cpus_available=$$(grep -cE 'cpu[0-9]+' /proc/stat)
+        disk_available=$$(df / | tail -1 | awk '{print $$4}')
+        warning_resources="false"
+        if (( mem_available < 4000 )) ; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough memory available for Docker.\e[0m"
+          echo "At least 4GB of memory required. You have $$(numfmt --to iec $$((mem_available * one_meg)))"
+          echo
+          warning_resources="true"
+        fi
+        if (( cpus_available < 2 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough CPUS available for Docker.\e[0m"
+          echo "At least 2 CPUs recommended. You have $${cpus_available}"
+          echo
+          warning_resources="true"
+        fi
+        if (( disk_available < one_meg * 10 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough Disk space available for Docker.\e[0m"
+          echo "At least 10 GBs recommended. You have $$(numfmt --to iec $$((disk_available * 1024 )))"
+          echo
+          warning_resources="true"
+        fi
+        if [[ $${warning_resources} == "true" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: You have not enough resources to run Airflow (see above)!\e[0m"
+          echo "Please follow the instructions to increase amount of resources available:"
+          echo "   https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#before-you-begin"
+          echo
+        fi
+        echo
+        echo "Creating missing opt dirs if missing:"
+        echo
+        mkdir -v -p /opt/airflow/{logs,dags,plugins,config}
+        echo
+        echo "Airflow version:"
+        /entrypoint airflow version
+        echo
+        echo "Running airflow config list to create default config file if missing."
+        echo
+        /entrypoint airflow config list >/dev/null
+        echo
+        echo "Change ownership of files in /opt/airflow to ${AIRFLOW_UID}:0"
+        echo
+        chown -R "${AIRFLOW_UID}:0" /opt/airflow/
+        echo
+        echo "Change ownership of files in shared volumes to ${AIRFLOW_UID}:0"
+        echo
+        chown -v -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins,config}
+        echo
+        echo "Files in shared volumes:"
+        echo
+        ls -la /opt/airflow/{logs,dags,plugins,config}
+    # yamllint enable rule:line-length
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:?définir _AIRFLOW_WWW_USER_PASSWORD dans .env}
+      _PIP_ADDITIONAL_REQUIREMENTS: ''
+    user: "0:0"
+
+  # CLI ponctuelle : `docker compose run --rm airflow-cli <commande>`.
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    # Volumes communs + tests/ (lecture seule) pour `make test-dags`. YAML ne sait pas
+    # étendre une liste héritée : on répète donc la liste complète.
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
+      - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
+      - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
+      - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+      - ${AIRFLOW_PROJ_DIR:-.}/tests:/opt/airflow/tests:ro
+    command:
+      - bash
+      - -c
+      - airflow
+    depends_on:
+      <<: *airflow-common-depends-on
+
+  # --- Stockage S3 ---
+  # Le projet MinIO est archivé (avril 2026) et ses images officielles ne sont plus
+  # publiées. On utilise l'image Chainguard, compilée depuis les sources MinIO et
+  # maintenue. Seul le tag `latest` est gratuit : on la fige donc par digest pour
+  # que `make up` soit reproductible. Pour mettre à jour :
+  #   docker buildx imagetools inspect cgr.dev/chainguard/minio:latest
+  minio:
+    image: &minio-image cgr.dev/chainguard/minio@sha256:869ca3178831d9f521ea02258a0f0d4fbc1e9f84302e707514e1f861b860865d
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?définir MINIO_ROOT_USER dans .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?définir MINIO_ROOT_PASSWORD dans .env}
+      # Alias `local` pour le client mc embarqué, utilisé par le healthcheck.
+      MC_HOST_local: http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@localhost:9000
+    ports:
+      # 127.0.0.1 : joignables depuis ce poste seulement (voir airflow-apiserver).
+      - "127.0.0.1:9000:9000"   # API S3 (boto3, DuckDB)
+      - "127.0.0.1:9001:9001"   # console web
+    # Volume nommé plutôt qu'un dossier du projet : sous Docker Desktop (Windows),
+    # les bind mounts sont lents et posent des problèmes de droits.
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      # Pas de curl dans l'image, mais `mc` est présent.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  # Service one-shot : crée le bucket. `--ignore-existing` le rend idempotent.
+  # Réutilise l'image minio (qui contient mc) : une seule image à figer.
+  minio-init:
+    image: *minio-image
+    entrypoint: ["mc"]
+    command: ["mb", "--ignore-existing", "local/${SIRENWATCH_S3_BUCKET:-sirenwatch}"]
+    environment:
+      MC_HOST_local: http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000
+    depends_on:
+      minio:
+        condition: service_healthy
+
+volumes:
+  postgres-db-volume:
+  minio-data:
