@@ -1,4 +1,23 @@
-.PHONY: up down ps logs test test-integration test-dags explore lint format backfill
+.PHONY: up down ps logs test test-integration test-dags explore lint format backfill clean
+
+# Sous Windows, GNU make exécute les recettes avec cmd.exe s'il ne trouve pas sh.exe
+# dans le PATH (cas d'un terminal PowerShell) : les recettes POSIX ci-dessous (variables,
+# pipes, test, awk…) échoueraient. On impose le sh de Git pour Windows, retrouvé depuis
+# `git --exec-path` (…/Git/mingw64/libexec/git-core → …/Git/bin/sh.exe) pour suivre
+# l'emplacement réel de Git. Git\bin\sh.exe, et non Git\usr\bin\sh.exe, ajoute /usr/bin
+# et /mingw64/bin au PATH, où se trouvent sed, awk, grep et openssl. Le `bash` du PATH
+# Windows est celui de WSL (une autre machine Linux) : à ne pas utiliser.
+# De plus, une ligne sans caractère spécial du shell (ni | ni $ ni >…) est lancée par
+# make directement, SANS passer par sh : le programme (rm, find…) est alors cherché dans
+# le PATH Windows. On y ajoute donc les outils de Git (séparateur « ; » sous Windows).
+ifeq ($(OS),Windows_NT)
+GIT_ROOT := $(subst /mingw64/libexec/git-core,,$(shell git --exec-path))
+ifeq ($(GIT_ROOT),)
+$(error Git pour Windows est introuvable : il fournit le shell utilisé par ce Makefile)
+endif
+SHELL := $(GIT_ROOT)/bin/sh.exe
+export PATH := $(GIT_ROOT)/usr/bin;$(GIT_ROOT)/mingw64/bin;$(PATH)
+endif
 
 COMPOSE := docker compose
 DAG_ID := bodacc_daily
@@ -94,3 +113,15 @@ lint:
 format:
 	uv run ruff format .
 	uv run ruff check --fix .
+
+# Supprime les caches et artefacts des outils de développement (Python, pytest, ruff, mypy,
+# couverture, build) : ils sont régénérés à la volée. Ne touche pas à .env, ni à .venv
+# (environnement uv, long à recréer), ni à logs/ et config/ (utilisés par les conteneurs
+# Airflow), ni aux données (volumes Docker : voir `docker compose down -v`).
+# find saute .venv, .git et logs/ (-prune) ; -exec … + ne lance rm qu'une fois, en fin
+# de parcours.
+clean:
+	find . \( -path ./.venv -o -path ./.git -o -path ./logs \) -prune \
+		-o -type d -name __pycache__ -prune -exec rm -rf {} +
+	rm -rf .pytest_cache .ruff_cache .mypy_cache .coverage coverage.xml htmlcov dist build
+	@echo "Caches et artefacts supprimés."

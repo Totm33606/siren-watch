@@ -39,10 +39,18 @@ jobs:
         run: make test
 
   dag-integrity:
-    name: Docker image and DAG integrity
+    name: Docker stack, DAG integrity and MinIO integration
     runs-on: ubuntu-latest
+    # Safety net: a service that never becomes healthy must not hold the runner for 6 hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
+      # uv runs the integration tests from the runner, like on a developer machine.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
 
       # Same path as a fresh clone: `make .env` copies the template and generates secrets.
       # On Linux, the Airflow containers must run with the runner's UID to write to the
@@ -62,3 +70,25 @@ jobs:
       # Parses dags/ with Airflow itself, inside the image that runs in production.
       - name: DAG integrity tests
         run: make test-dags
+
+      # Same command as on a fresh machine. --wait (in the Makefile) returns only once every
+      # service is healthy and the one-shot services have exited with code 0, and fails
+      # otherwise. The DAG is created paused, so no run starts and the BODACC API is never
+      # called from CI.
+      - name: Start the full stack
+        run: make up
+
+      # Real round trip with MinIO through the published port localhost:9000, using the
+      # endpoint and credentials from .env: the same path as DuckDB on a developer machine.
+      - name: MinIO integration tests
+        run: make test-integration
+
+      # On failure, the service logs are the only way to understand what happened.
+      - name: Service logs
+        if: failure()
+        run: docker compose logs --tail=200
+
+      # always(): stop the stack even if a previous step failed.
+      - name: Stop the stack
+        if: always()
+        run: make down

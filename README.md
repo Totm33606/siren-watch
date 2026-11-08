@@ -54,7 +54,8 @@ flowchart LR
   endpoint. Moving from MinIO to AWS S3 means changing environment variables, not code.
 - **Tests without network.** Unit tests run on real, anonymised API responses
   (`httpx.MockTransport`, `moto`). DAG integrity is tested inside the production
-  Airflow image, and both run in CI.
+  Airflow image. On every push, CI also starts the full stack, as on a fresh machine,
+  and runs a real round trip with MinIO.
 - **Privacy by design.** Natural persons are anonymised in the test fixtures, and
   personal addresses never reach the `clean/` zone.
 
@@ -149,6 +150,7 @@ make lint               # ruff check + ruff format --check
 make test-dags          # DAG integrity, run inside the Airflow image
 make test-integration   # real round trip with MinIO (requires make up)
 make format             # reformat the code
+make clean              # remove caches and build artefacts (keeps .env, .venv and data)
 ```
 
 - **Business logic** lives in `src/sirenwatch/`. The DAG only calls it with the run
@@ -167,7 +169,7 @@ make format             # reformat the code
 ├── .env.example              # template for .env (never committed)
 ├── Makefile
 ├── pyproject.toml / uv.lock  # dependencies managed with uv
-├── .github/workflows/ci.yml  # lint, unit tests, image build, DAG integrity
+├── .github/workflows/ci.yml  # lint, unit tests, image, DAG integrity, full stack + MinIO
 ├── dags/bodacc_daily.py      # the DAG: extract → transform → validate
 ├── src/sirenwatch/
 │   ├── config.py             # environment variables
