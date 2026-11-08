@@ -1,7 +1,7 @@
-"""Test d'intégration contre le vrai MinIO lancé par `make up`.
+"""Integration test against the real MinIO started by `make up`.
 
-Exclu de `make test` (marqueur `integration`). Lancer avec `make test-integration`,
-qui charge `.env` pour obtenir l'endpoint et les identifiants.
+Excluded from `make test` (`integration` marker). Run it with `make test-integration`,
+which loads `.env` for the endpoint and the credentials.
 """
 
 import os
@@ -23,7 +23,7 @@ def storage():
 
 
 def test_aller_retour_minio(storage):
-    # Préfixe dédié et nom aléatoire : ne touche jamais aux zones raw/ et clean/.
+    # Dedicated prefix and random name: never touches the raw/ and clean/ zones.
     key = f"_tests/roundtrip-{uuid.uuid4().hex}.json"
     payload = '{"message": "procédure collective"}'.encode()
     try:

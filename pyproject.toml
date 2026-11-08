@@ -3,11 +3,11 @@ name = "sirenwatch"
 version = "0.1.0"
 description = "Daily Airflow pipeline collecting French insolvency notices (BODACC) into an S3 data lake — raw JSON, typed Parquet, validation, DuckDB queries."
 readme = "README.md"
-# Même version mineure que l'image apache/airflow:3.4.0 (Python 3.13), pour que le
-# code testé en local soit celui qui tourne dans les conteneurs.
+# Same minor version as the apache/airflow:3.4.0 image (Python 3.13), so that the code
+# tested locally is the code running in the containers.
 requires-python = ">=3.13,<3.14"
 authors = [{ name = "Thomas" }]
-# Expression SPDX (PEP 639) : la forme `{ text = "MIT" }` est dépréciée.
+# SPDX expression (PEP 639): the `{ text = "MIT" }` form is deprecated.
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["airflow", "data-engineering", "bodacc", "minio", "duckdb", "parquet"]
@@ -16,7 +16,7 @@ dependencies = [
     "boto3>=1.43",
     "httpx>=0.28",
     "pyarrow>=25",
-    # Windows n'a pas de base de fuseaux horaires système : zoneinfo la trouve ici.
+    # Windows has no system time zone database: zoneinfo finds it in this package.
     "tzdata>=2025.2 ; sys_platform == 'win32'",
 ]
 
@@ -24,12 +24,13 @@ dependencies = [
 Repository = "https://github.com/Totm33606/siren-watch"
 
 [project.scripts]
-# Extraction manuelle d'une date, hors Airflow : `uv run sirenwatch-extract 2026-11-06`.
+# Manual extraction of one date, outside Airflow:
+#   uv run --env-file .env sirenwatch-extract 2026-11-06
 sirenwatch-extract = "sirenwatch.bodacc.extract:main"
 
-# Groupe de dépendances (PEP 735) plutôt qu'« extra » optionnel : les outils de dev
-# ne sont pas publiés avec le paquet, et `uv sync` / `uv run` les installent par
-# défaut, sans option à ajouter dans le Makefile ni dans la CI.
+# Dependency group (PEP 735) rather than an optional extra: dev tools are not published
+# with the package, and `uv sync` / `uv run` install them by default, with no extra
+# option in the Makefile or the CI.
 [dependency-groups]
 dev = [
     "duckdb>=2.0.0",
@@ -52,7 +53,7 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: tests qui appellent un vrai service (MinIO) ; exclus de `make test`",
+    "integration: tests that call a real service (MinIO); excluded from `make test`",
 ]
 addopts = "-ra -m 'not integration' --cov=src --cov-report=term-missing"
 

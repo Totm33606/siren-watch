@@ -1,1 +1,1 @@
-"""SirenWatch : collecte des annonces BODACC de procédures collectives."""
+"""SirenWatch: collection of BODACC insolvency notices."""

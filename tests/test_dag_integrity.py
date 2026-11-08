@@ -1,9 +1,8 @@
-"""Intégrité du DAG bodacc_daily.
+"""Integrity of the bodacc_daily DAG.
 
-Les tests qui chargent le DAG ont besoin d'Airflow : ils tournent dans l'image via
-`make test-dags`, et sont ignorés (skip) par `make test` sur le poste, où Airflow
-n'est pas installé. Le test « pas de code métier » ne lit que le fichier source
-et tourne partout.
+Tests that load the DAG need Airflow: they run in the image via `make test-dags`, and
+`make test` skips them on the host, where Airflow is not installed. The "no business
+code" test only reads the source file and runs everywhere.
 """
 
 import ast
@@ -21,7 +20,7 @@ def dag():
     pytest.importorskip("airflow", reason="Airflow absent : lancer `make test-dags`")
     from airflow.dag_processing.dagbag import DagBag
 
-    # Airflow 3.4 : DagBag ne charge que dag_folder (plus d'option include_examples).
+    # Airflow 3.4: DagBag only loads dag_folder (no include_examples option any more).
     dagbag = DagBag(dag_folder=str(DAGS_DIR))
     assert dagbag.import_errors == {}, dagbag.import_errors
     assert DAG_ID in dagbag.dags
@@ -48,8 +47,8 @@ def test_planning_quotidien_en_utc(dag):
 
 
 def test_catchup_et_concurrence(dag):
-    assert dag.catchup is True  # requis pour le rattrapage et le backfill
-    assert 1 <= dag.max_active_runs <= 5  # ne pas saturer l'API
+    assert dag.catchup is True  # required for catchup and backfill
+    assert 1 <= dag.max_active_runs <= 5  # do not overload the API
 
 
 def test_retries(dag):
@@ -63,7 +62,7 @@ def test_start_date_fixe_en_utc(dag):
 
 
 def test_pas_de_code_metier_au_niveau_du_module():
-    """Le DAG n'importe sirenwatch que dans les tâches, pour un parsing rapide."""
+    """The DAG only imports sirenwatch inside the tasks, for fast parsing."""
     tree = ast.parse(DAG_FILE.read_text(encoding="utf-8"))
     top_level_modules = []
     for node in tree.body:

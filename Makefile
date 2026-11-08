@@ -1,15 +1,12 @@
 .PHONY: up down ps logs test test-integration test-dags explore lint format backfill clean
 
-# Sous Windows, GNU make exécute les recettes avec cmd.exe s'il ne trouve pas sh.exe
-# dans le PATH (cas d'un terminal PowerShell) : les recettes POSIX ci-dessous (variables,
-# pipes, test, awk…) échoueraient. On impose le sh de Git pour Windows, retrouvé depuis
-# `git --exec-path` (…/Git/mingw64/libexec/git-core → …/Git/bin/sh.exe) pour suivre
-# l'emplacement réel de Git. Git\bin\sh.exe, et non Git\usr\bin\sh.exe, ajoute /usr/bin
-# et /mingw64/bin au PATH, où se trouvent sed, awk, grep et openssl. Le `bash` du PATH
-# Windows est celui de WSL (une autre machine Linux) : à ne pas utiliser.
-# De plus, une ligne sans caractère spécial du shell (ni | ni $ ni >…) est lancée par
-# make directement, SANS passer par sh : le programme (rm, find…) est alors cherché dans
-# le PATH Windows. On y ajoute donc les outils de Git (séparateur « ; » sous Windows).
+# On Windows, GNU make runs recipes with cmd.exe when sh.exe is not on the PATH (e.g. in
+# PowerShell), which breaks the POSIX recipes below. Use Git for Windows' sh instead,
+# located from `git --exec-path` (…/Git/mingw64/libexec/git-core → …/Git). Git\bin\sh.exe,
+# not Git\usr\bin\sh.exe, puts /usr/bin and /mingw64/bin (sed, awk, grep, openssl) on its
+# PATH. The `bash` on the Windows PATH is WSL's, another Linux machine: do not use it.
+# make also runs lines without shell metacharacters (no |, $, >…) directly, without sh,
+# looking the program up on the Windows PATH: Git's tools are added to it (";"-separated).
 ifeq ($(OS),Windows_NT)
 GIT_ROOT := $(subst /mingw64/libexec/git-core,,$(shell git --exec-path))
 ifeq ($(GIT_ROOT),)
@@ -21,16 +18,15 @@ endif
 
 COMPOSE := docker compose
 DAG_ID := bodacc_daily
-# Rejouer les runs déjà réussis lors d'un backfill : none | failed | completed.
+# Backfill policy for dates that already have a run: none | failed | completed.
 REPROCESS ?= none
 
-# Sur une machine vierge, .env n'existe pas : on le crée depuis le modèle, en générant
-# des secrets propres à ce poste (le modèle versionné ne contient que des valeurs fictives).
-# Make ne refait pas cette copie si .env existe déjà (cible fichier).
-#  - JWT : 32 octets aléatoires en hexadécimal.
-#  - Fernet : 32 octets en base64 « URL-safe » (+/ remplacés par -_), le format attendu
-#    par Airflow. openssl est présent sous Linux, macOS et Git Bash.
-# On écrit via sed > fichier plutôt que `sed -i`, dont la syntaxe diffère entre GNU et macOS.
+# On a fresh machine .env does not exist: create it from the template, with secrets
+# generated for this machine (the committed template only holds placeholders).
+# File target: make never overwrites an existing .env.
+#  - JWT secret: 32 random bytes, hex-encoded.
+#  - Fernet key: 32 random bytes in URL-safe base64 (+/ become -_), as Airflow expects.
+# `sed … > file` rather than `sed -i`, whose syntax differs between GNU and macOS.
 ENV_FILE := .env
 $(ENV_FILE):
 	@jwt=$$(openssl rand -hex 32); \
@@ -39,15 +35,14 @@ $(ENV_FILE):
 	    -e "s|^FERNET_KEY=.*|FERNET_KEY=$$fernet|" $(ENV_FILE).example > $@
 	@echo "$@ créé depuis $@.example, avec un secret JWT et une clé Fernet générés."
 
-# --build : reconstruit l'image Airflow si le Dockerfile ou src/ ont changé (sinon,
-# le cache Docker rend l'étape quasi instantanée).
-# --wait : rend la main quand les services sont "healthy" (et les one-shot terminés),
-# et échoue sinon. Pratique pour enchaîner des commandes après `make up`.
+# --build: rebuild the Airflow image if the Dockerfile or src/ changed (cached otherwise).
+# --wait: return once services are healthy and one-shot services have exited; fail
+# otherwise. Handy for chaining commands after `make up`.
 up: .env
 	$(COMPOSE) up -d --build --wait
 	@echo "Airflow : http://localhost:8080  |  Console MinIO : http://localhost:9001"
 
-# Sans -v : la base Airflow et les données MinIO (volumes nommés) sont conservées.
+# Without -v: the Airflow database and the MinIO data (named volumes) are kept.
 down:
 	$(COMPOSE) down
 
@@ -57,31 +52,30 @@ ps:
 logs:
 	$(COMPOSE) logs -f --tail=100
 
-# Tests unitaires, sans réseau (les tests marqués `integration` sont exclus).
+# Unit tests, no network (tests marked `integration` are excluded).
 test:
 	uv run pytest
 
-# Tests contre le MinIO local (nécessite `make up`). --env-file charge .env sur le poste,
-# où l'endpoint est http://localhost:9000.
+# Tests against the local MinIO (requires `make up`). --env-file loads .env, where the
+# endpoint seen from this machine is http://localhost:9000.
 test-integration: .env
 	uv run --env-file .env pytest -m integration -v
 
-# Test d'intégrité du DAG, exécuté DANS l'image Airflow (Airflow ne s'installe pas
-# nativement sous Windows). tests/ est monté en lecture seule par le service airflow-cli
-# (docker-compose.yml) ; pytest est installé à la volée dans ce conteneur jetable (--rm),
-# sans alourdir l'image de production.
+# DAG integrity tests, run INSIDE the Airflow image (Airflow does not install natively
+# on Windows). tests/ is mounted read-only by the airflow-cli service; pytest is installed
+# on the fly in this throwaway container (--rm), keeping it out of the production image.
 test-dags:
 	$(COMPOSE) run --rm airflow-cli \
 		bash -c "pip install --quiet --disable-pip-version-check pytest && python -m pytest -p no:cacheprovider -v /opt/airflow/tests/test_dag_integrity.py"
 
-# Backfill : Airflow 3 crée un run par date, exécuté par le scheduler. Un backfill a sa
-# propre limite de concurrence (--max-active-runs), distincte de celle du DAG : on la
-# fixe à 3 pour ne pas saturer l'API. REPROCESS=completed rejoue aussi les dates réussies.
-# END est inclusif : --to-date YYYY-MM-DD seul vaudrait minuit et exclurait le run de
-# END (déclenché à 10:00 UTC), d'où le T23:59:59.
-# `airflow backfill create` ne fait qu'enregistrer des runs en base : c'est le scheduler
-# qui les exécute, et seulement si le DAG est actif. Sinon les runs resteraient en
-# attente sans aucune erreur. On vérifie donc ces deux points AVANT de créer les runs.
+# Backfill: Airflow 3 creates one run per date, executed by the scheduler.
+#  - --max-active-runs: backfill-specific concurrency limit (the DAG's own limit does not
+#    apply), set to 3 to spare the API. REPROCESS=completed also re-runs successful dates.
+#  - END is inclusive: a bare --to-date means midnight and would exclude the run of END
+#    (triggered at 10:00 UTC), hence T23:59:59.
+# `airflow backfill create` only records runs in the database: the scheduler executes
+# them, and only if the DAG is active. Otherwise they stay queued without any error, so
+# both conditions are checked BEFORE creating the runs.
 backfill:
 	@test -n "$(START)" && test -n "$(END)" || \
 		(echo "Usage : make backfill START=YYYY-MM-DD END=YYYY-MM-DD [REPROCESS=none|failed|completed]" && exit 1)
@@ -101,8 +95,8 @@ backfill:
 		--from-date $(START) --to-date $(END)T23:59:59 --reprocess-behavior $(REPROCESS) \
 		--max-active-runs 3
 
-# Requêtes DuckDB sur clean/ depuis le poste (nécessite make up). .env fournit les
-# identifiants S3, lus par le secret credential_chain du fichier SQL.
+# DuckDB queries on clean/ from this machine (requires make up). .env provides the S3
+# credentials, read by the credential_chain secret of the SQL file.
 explore: .env
 	uv run --env-file .env python notebooks/run_sql.py notebooks/explore.sql
 
@@ -114,12 +108,11 @@ format:
 	uv run ruff format .
 	uv run ruff check --fix .
 
-# Supprime les caches et artefacts des outils de développement (Python, pytest, ruff, mypy,
-# couverture, build) : ils sont régénérés à la volée. Ne touche pas à .env, ni à .venv
-# (environnement uv, long à recréer), ni à logs/ et config/ (utilisés par les conteneurs
-# Airflow), ni aux données (volumes Docker : voir `docker compose down -v`).
-# find saute .venv, .git et logs/ (-prune) ; -exec … + ne lance rm qu'une fois, en fin
-# de parcours.
+# Remove the caches and build artefacts of the dev tools (Python, pytest, ruff, mypy,
+# coverage, build): they are regenerated on demand. Leaves untouched .env, .venv (uv
+# environment, slow to recreate), logs/ and config/ (used by the Airflow containers) and
+# the data (Docker volumes: see `docker compose down -v`).
+# find skips .venv, .git and logs/ (-prune); `-exec … +` runs rm once, at the end.
 clean:
 	find . \( -path ./.venv -o -path ./.git -o -path ./logs \) -prune \
 		-o -type d -name __pycache__ -prune -exec rm -rf {} +

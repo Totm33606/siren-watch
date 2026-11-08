@@ -1,13 +1,13 @@
 -- =============================================================================
--- SirenWatch : exploration du data lake avec DuckDB (extension httpfs)
+-- SirenWatch: exploring the data lake with DuckDB (httpfs extension)
 --
--- Lancer :  make explore
+-- Run:  make explore
 --   (= uv run --env-file .env python notebooks/run_sql.py notebooks/explore.sql)
--- ou, avec la CLI DuckDB et les variables AWS_* exportées :
+-- or, with the DuckDB CLI and the AWS_* variables exported:
 --   duckdb -c ".read notebooks/explore.sql"
 --
--- Aucun identifiant ici : le secret `credential_chain` (chaîne 'env') lit
--- AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY dans l'environnement, comme boto3.
+-- No credentials here: the `credential_chain` secret ('env' chain) reads
+-- AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the environment, like boto3.
 -- =============================================================================
 
 INSTALL httpfs;
@@ -15,8 +15,8 @@ LOAD httpfs;
 INSTALL aws;
 LOAD aws;
 
--- MinIO vu depuis le poste : port publié localhost:9000, adressage "path", sans TLS.
--- Pour S3 réel : retirer ENDPOINT / URL_STYLE / USE_SSL et mettre la bonne REGION.
+-- MinIO seen from this machine: published port localhost:9000, "path" addressing, no TLS.
+-- For real S3: remove ENDPOINT / URL_STYLE / USE_SSL and set the right REGION.
 CREATE OR REPLACE SECRET sirenwatch_s3 (
     TYPE s3,
     PROVIDER credential_chain,
@@ -27,9 +27,9 @@ CREATE OR REPLACE SECRET sirenwatch_s3 (
     REGION 'us-east-1'
 );
 
--- Une vue sur toutes les partitions journalières. hive_partitioning expose le
--- dossier `date=YYYY-MM-DD` comme une colonne `date` : un filtre sur `date` ne lit
--- que les fichiers utiles (partition pruning).
+-- A view over all the daily partitions. hive_partitioning exposes the
+-- `date=YYYY-MM-DD` folder as a `date` column: a filter on `date` only reads the
+-- files it needs (partition pruning).
 CREATE OR REPLACE VIEW annonces AS
 SELECT *
 FROM read_parquet(
@@ -40,11 +40,11 @@ FROM read_parquet(
 
 
 -- -----------------------------------------------------------------------------
--- 1. Contrôles du data lake
+-- 1. Data lake checks
 -- -----------------------------------------------------------------------------
 
--- 1a. Couverture : partitions chargées (jours vides compris), jours avec annonces, période.
---     Un jour sans parution a une partition, mais sans ligne : on compte les fichiers.
+-- 1a. Coverage: partitions loaded (empty days included), days with notices, period.
+--     A day without publication has a partition but no row: files are counted.
 SELECT
     (SELECT count(*) FROM glob('s3://sirenwatch/clean/bodacc/date=*/annonces.parquet'))
                           AS partitions,
@@ -54,14 +54,14 @@ SELECT
     max(date)             AS derniere_parution
 FROM annonces;
 
--- 1b. Doublons sur id_annonce, toutes partitions confondues (attendu : 0 ligne).
---     C'est le contrôle du critère de fin de V1 « backfill relancé sans doublon ».
+-- 1b. Duplicate id_annonce across all partitions (expected: 0 rows).
+--     This is the check behind "a re-run backfill creates no duplicates".
 SELECT id_annonce, count(*) AS occurrences
 FROM annonces
 GROUP BY id_annonce
 HAVING count(*) > 1;
 
--- 1c. Qualité par mois : taux de SIREN manquants, natures non classées.
+-- 1c. Quality by month: missing SIREN rate, unclassified labels.
 SELECT
     strftime(date_parution, '%Y-%m')                                   AS mois,
     count(*)                                                           AS annonces,
@@ -73,16 +73,16 @@ ORDER BY mois;
 
 
 -- -----------------------------------------------------------------------------
--- 2. Procédures par type, par département et par mois (requête demandée)
+-- 2. Procedures by type, department and month (the main query)
 --
--- Une « procédure » = une annonce de jugement d'ouverture (evenement = 'ouverture').
--- Les autres annonces (créances, clôture…) sont des étapes d'une procédure déjà
--- comptée. Les rectificatifs sont exclus (ils republient une annonce existante).
--- Les conversions (redressement -> liquidation) ne sont pas comptées comme de
--- nouvelles procédures ; voir la requête 3 pour les suivre à part.
+-- A "procedure" = a notice of an opening judgment (evenement = 'ouverture').
+-- The other notices (claims, closing…) are stages of an already counted procedure.
+-- Corrections are excluded (they republish an existing notice).
+-- Conversions (receivership -> liquidation) are not counted as new procedures;
+-- see query 3 to track them separately.
 -- -----------------------------------------------------------------------------
 
--- 2a. Forme longue : une ligne par (mois, département, type).
+-- 2a. Long format: one row per (month, department, type).
 SELECT
     strftime(date_parution, '%Y-%m') AS mois,
     departement,
@@ -94,7 +94,7 @@ WHERE evenement = 'ouverture'
 GROUP BY ALL
 ORDER BY mois, departement, type_procedure;
 
--- 2b. Même résultat en tableau croisé : un type par colonne, plus lisible.
+-- 2b. Same result as a crosstab: one column per type, easier to read.
 PIVOT (
     SELECT strftime(date_parution, '%Y-%m') AS mois, departement, type_procedure
     FROM annonces
@@ -107,7 +107,7 @@ ORDER BY mois, departement;
 
 
 -- -----------------------------------------------------------------------------
--- 3. Vue nationale : étapes des procédures par mois et par type
+-- 3. National view: procedure stages by month and type
 -- -----------------------------------------------------------------------------
 
 SELECT
@@ -125,7 +125,7 @@ ORDER BY mois, type_procedure;
 
 
 -- -----------------------------------------------------------------------------
--- 4. Départements les plus touchés sur la période (ouvertures, tous types)
+-- 4. Most affected departments over the period (openings, all types)
 -- -----------------------------------------------------------------------------
 
 SELECT
@@ -142,10 +142,10 @@ LIMIT 10;
 
 
 -- -----------------------------------------------------------------------------
--- 5. Niveau entreprise : parcours des SIREN sur la période
+-- 5. Company level: SIREN histories over the period
 --
--- `sirens` contient tous les SIREN d'une annonce (plusieurs débiteurs possibles) :
--- unnest() donne une ligne par (annonce, entreprise), sans perte.
+-- `sirens` holds every SIREN of a notice (possibly several debtors):
+-- unnest() gives one row per (notice, company), without loss.
 -- -----------------------------------------------------------------------------
 
 WITH evenements AS (

@@ -1,4 +1,4 @@
-"""Tests de extract.py contre une fausse API (httpx.MockTransport) : aucun appel réseau."""
+"""Tests for extract.py against a fake API (httpx.MockTransport): no network calls."""
 
 import datetime
 import json
@@ -25,11 +25,11 @@ class FakeStorage:
 
 
 class FakeAPI:
-    """Imite l'API Opendatasoft : `records` paginé (limit/offset) et `exports/json`."""
+    """Mimics the Opendatasoft API: paginated `records` (limit/offset) and `exports/json`."""
 
     def __init__(self, records, failures=None):
         self.records = records
-        self.failures = list(failures or [])  # réponses à servir avant les vraies
+        self.failures = list(failures or [])  # responses served before the real ones
         self.calls: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -55,7 +55,7 @@ class Sleeps(list):
         self.append(seconds)
 
 
-# --- filtre --------------------------------------------------------------------
+# --- filter --------------------------------------------------------------------
 
 
 def test_filtre_famille_et_date():
@@ -73,7 +73,7 @@ def test_requete_envoyee():
     params = api.calls[0].url.params
     assert api.calls[0].url.path.endswith("/annonces-commerciales/records")
     assert params["where"] == ex.build_where(D)
-    assert params["order_by"] == "id"  # ordre stable entre les pages
+    assert params["order_by"] == "id"  # stable order across pages
     assert params["limit"] == "100"
 
 
@@ -81,7 +81,7 @@ def test_requete_envoyee():
 
 
 def test_pagination_recupere_toutes_les_pages_dans_l_ordre():
-    api = FakeAPI(SAMPLE)  # 12 annonces
+    api = FakeAPI(SAMPLE)  # 12 notices
     records = ex.fetch_annonces(D, api.client(), page_size=5, sleep=Sleeps())
     assert records == SAMPLE
     offsets = [c.url.params.get("offset", "0") for c in api.calls]
@@ -99,12 +99,12 @@ def test_bascule_sur_export_au_dela_de_la_fenetre():
     records = ex.fetch_annonces(D, api.client(), page_size=5, max_window=10, sleep=Sleeps())
     assert records == SAMPLE
     assert api.calls[-1].url.path.endswith("/exports/json")
-    assert len(api.calls) == 2  # 1re page (pour total_count) + export
+    assert len(api.calls) == 2  # first page (for total_count) + export
 
 
 def test_pagination_incoherente_detectee():
     class ShrinkingAPI(FakeAPI):
-        # Le jeu de données "perd" une annonce entre deux pages.
+        # The dataset "loses" a notice between two pages.
         def __call__(self, request):
             response = super().__call__(request)
             if request.url.params.get("offset") == "10":
@@ -123,7 +123,7 @@ def test_retry_sur_429_et_5xx(status):
     sleeps = Sleeps()
     api = FakeAPI(SAMPLE, failures=[httpx.Response(status), httpx.Response(status)])
     assert ex.fetch_annonces(D, api.client(), sleep=sleeps) == SAMPLE
-    assert sleeps == [2.0, 4.0]  # backoff exponentiel
+    assert sleeps == [2.0, 4.0]  # exponential backoff
 
 
 def test_retry_sur_erreur_reseau():
@@ -161,7 +161,7 @@ def test_backoff_plafonne():
     assert ex._backoff(10) == ex.BACKOFF_MAX_SECONDS
 
 
-# --- écriture dans raw/ ----------------------------------------------------------
+# --- writing to raw/ -------------------------------------------------------------
 
 
 def test_extract_ecrit_la_partition_raw():
@@ -170,8 +170,8 @@ def test_extract_ecrit_la_partition_raw():
     assert key == "raw/bodacc/date=2026-11-05/annonces.json"
     data, content_type = storage.objects[key]
     assert content_type == "application/json"
-    assert json.loads(data.decode("utf-8")) == SAMPLE  # contenu brut, inchangé
-    assert "Procédures collectives".encode() in data  # UTF-8 lisible, pas d'échappement \u
+    assert json.loads(data.decode("utf-8")) == SAMPLE  # raw content, unchanged
+    assert "Procédures collectives".encode() in data  # readable UTF-8, no \u escapes
 
 
 def test_extract_jour_sans_annonce_ecrit_un_tableau_vide():

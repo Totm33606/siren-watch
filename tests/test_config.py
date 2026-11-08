@@ -29,7 +29,7 @@ def test_variable_vide_traitee_comme_absente():
 
 
 def test_sans_endpoint_on_vise_aws():
-    # S3 réel : pas d'endpoint, boto3 utilise l'endpoint AWS de la région.
+    # Real S3: no endpoint, boto3 uses the region's AWS endpoint.
     env = {"SIRENWATCH_S3_BUCKET": "sirenwatch", "SIRENWATCH_S3_ENDPOINT_URL": ""}
     settings = load_settings(env)
     assert settings.s3_endpoint_url is None

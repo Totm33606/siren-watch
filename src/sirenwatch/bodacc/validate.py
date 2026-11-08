@@ -1,18 +1,18 @@
-"""Contrôles de qualité de `clean/` pour une date. Fait échouer le run si KO.
+"""Quality checks on `clean/` for one date. Fail the run if a blocking check fails.
 
-Contrôles bloquants (erreurs) :
-- schéma et types conformes à CLEAN_SCHEMA, colonnes obligatoires sans valeur nulle ;
-- `siren` valide (9 chiffres + clé de Luhn) quand il est présent, idem pour `sirens` ;
-- pas de doublon sur `id_annonce` ;
-- toutes les lignes ont `date_parution` = la date contrôlée ;
-- `type_procedure` et `evenement` dans leurs listes de valeurs.
+Blocking checks (errors):
+- schema and types match CLEAN_SCHEMA, required columns have no nulls;
+- `siren` is valid (9 digits + Luhn check digit) when present, and so is each `sirens` value;
+- no duplicate `id_annonce`;
+- every row has `date_parution` = the checked date;
+- `type_procedure` and `evenement` are within their allowed values.
 
-Journalisé sans échec :
-- nombre de lignes, taux de SIREN manquants, natures de jugement non classées ;
-- zéro ligne un jour ouvré : avertissement (le BODACC a de vrais jours sans parution).
+Logged without failing:
+- row count, missing SIREN rate, unclassified court-decision labels;
+- zero rows on a weekday: warning (the BODACC has genuine days without publication).
 
-Contrôles en Python simple : un framework comme Great Expectations serait
-disproportionné pour une seule table.
+Plain Python checks: a framework such as Great Expectations would be overkill for a
+single table.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from sirenwatch.storage import Storage, partition_key
 
 log = logging.getLogger(__name__)
 
-MAX_EXAMPLES = 5  # valeurs fautives citées dans un message d'erreur
+MAX_EXAMPLES = 5  # faulty values quoted in an error message
 _CHECKED_COLUMNS = (
     "id_annonce",
     "date_parution",
@@ -49,7 +49,7 @@ _CHECKED_COLUMNS = (
 
 
 class ValidationError(RuntimeError):
-    """Au moins un contrôle bloquant a échoué."""
+    """At least one blocking check failed."""
 
 
 @dataclass
@@ -67,14 +67,14 @@ class ValidationReport:
 
 
 def check_table(table: pa.Table, date: datetime.date) -> ValidationReport:
-    """Applique tous les contrôles à `table` et renvoie un rapport (ne lève pas)."""
+    """Run all the checks on `table` and return a report (does not raise)."""
     report = ValidationReport(date=date, row_count=table.num_rows)
 
     _check_schema(table, report)
     if report.errors:
-        return report  # colonnes manquantes ou mal typées : la suite n'aurait pas de sens
+        return report  # missing or mistyped columns: the other checks would be meaningless
 
-    # Seules les colonnes contrôlées sont converties en listes Python.
+    # Only the checked columns are converted to Python lists.
     cols = {name: table.column(name).to_pylist() for name in _CHECKED_COLUMNS}
     _check_not_null(table, report)
     _check_sirens(cols, report)
@@ -100,7 +100,7 @@ def check_table(table: pa.Table, date: datetime.date) -> ValidationReport:
 
 
 def validate(date: datetime.date, storage: Storage | None = None) -> ValidationReport:
-    """Contrôle `clean/` pour `date`. Lève ValidationError si un contrôle bloquant échoue."""
+    """Check `clean/` for `date`. Raise ValidationError if a blocking check fails."""
     storage = storage or Storage.from_settings(load_settings())
     key = partition_key("clean", "bodacc", date, "annonces.parquet")
     report = check_table(parquet_bytes_to_table(storage.read_bytes(key)), date)
@@ -118,7 +118,7 @@ def validate(date: datetime.date, storage: Storage | None = None) -> ValidationR
     return report
 
 
-# --- contrôles -------------------------------------------------------------------
+# --- checks ----------------------------------------------------------------------
 
 
 def _check_schema(table: pa.Table, report: ValidationReport) -> None:
@@ -158,7 +158,7 @@ def _check_sirens(cols: dict[str, list], report: ValidationReport) -> None:
             f"{len(bad_list)} valeur(s) invalide(s) dans sirens, ex. {bad_list[:MAX_EXAMPLES]}"
         )
 
-    # Cohérence : le siren principal fait partie de la liste complète.
+    # Consistency: the main siren belongs to the full list.
     incoherent = [
         i
         for i, s, lst in zip(cols["id_annonce"], cols["siren"], cols["sirens"], strict=True)

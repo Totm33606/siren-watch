@@ -1,4 +1,4 @@
-"""Tests de validate.py à partir de la fixture (aucun appel réseau ni stockage réel)."""
+"""Tests for validate.py from the fixture (no network calls, no real storage)."""
 
 import datetime
 import json
@@ -15,12 +15,12 @@ from sirenwatch.bodacc import validate as va
 FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE = json.loads((FIXTURES / "bodacc_collective_sample.json").read_text(encoding="utf-8"))
 EXTRACTED_AT = datetime.datetime(2026, 11, 7, 8, 0, tzinfo=datetime.UTC)
-D = datetime.date(2026, 10, 25)  # un dimanche
+D = datetime.date(2026, 10, 25)  # a Sunday
 MONDAY = datetime.date(2026, 10, 26)
 
 
 def table_for(date):
-    """Table propre : annonces de la fixture, toutes datées de `date`."""
+    """Clean table: the fixture's notices, all dated `date`."""
     records = [{**r, "dateparution": date.isoformat()} for r in SAMPLE]
     return tr.transform_records(records, EXTRACTED_AT)
 
@@ -41,7 +41,7 @@ class FakeStorage:
         return self.objects[key]
 
 
-# --- cas valides -------------------------------------------------------------------
+# --- valid cases -------------------------------------------------------------------
 
 
 def test_table_propre_valide():
@@ -52,7 +52,7 @@ def test_table_propre_valide():
 
 
 def test_taux_de_siren_manquants():
-    # 2 annonces sur 12 sans SIREN dans la fixture.
+    # 2 notices out of 12 have no SIREN in the fixture.
     report = va.check_table(table_for(D), D)
     assert report.missing_siren_rate == pytest.approx(2 / 12)
 
@@ -76,7 +76,7 @@ def test_zero_ligne_un_jour_ouvre_avertit_sans_echouer():
     assert "jour ouvré" in report.warnings[0]
 
 
-# --- cas en échec ------------------------------------------------------------------
+# --- failing cases -----------------------------------------------------------------
 
 
 def test_doublon_id_annonce():
@@ -90,7 +90,7 @@ def test_doublon_id_annonce():
 def test_siren_invalide():
     table = table_for(D)
     sirens = table.column("siren").to_pylist()
-    sirens[0] = "934616559"  # clé de Luhn fausse
+    sirens[0] = "934616559"  # wrong Luhn check digit
     report = va.check_table(replace_column(table, "siren", sirens), D)
     assert any("siren invalide" in e for e in report.errors)
 
@@ -121,7 +121,7 @@ def test_valeur_obligatoire_nulle():
     table = table_for(D)
     values = table.column("type_avis").to_pylist()
     values[0] = None
-    field = pa.field("type_avis", pa.string())  # nullable, pour pouvoir injecter un None
+    field = pa.field("type_avis", pa.string())  # nullable, so that a None can be injected
     index = table.schema.get_field_index("type_avis")
     table = table.set_column(index, field, pa.array(values))
     report = va.check_table(table, D)
@@ -141,7 +141,7 @@ def test_valeur_hors_liste():
     assert any("Valeurs inconnues dans evenement" in e for e in report.errors)
 
 
-# --- validate() : lecture de clean/ et échec du run ------------------------------------
+# --- validate(): reading clean/ and failing the run ------------------------------------
 
 
 def test_validate_ok_journalise_les_indicateurs(caplog):

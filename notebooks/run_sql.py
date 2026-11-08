@@ -1,10 +1,10 @@
-"""Exécute un fichier SQL DuckDB instruction par instruction et affiche chaque résultat.
+"""Run a DuckDB SQL file statement by statement and print each result.
 
-Usage : uv run --env-file .env python notebooks/run_sql.py notebooks/explore.sql
+Usage: uv run --env-file .env python notebooks/run_sql.py notebooks/explore.sql
 
-La CLI DuckDB fait la même chose (`duckdb -c ".read fichier.sql"`) ; ce script évite
-de l'installer, le paquet Python `duckdb` suffit (dépendance de dev du projet).
-Chaque résultat est précédé du commentaire `--` qui précède la requête dans le fichier.
+The DuckDB CLI does the same (`duckdb -c ".read file.sql"`); this script avoids
+installing it, since the `duckdb` Python package (a dev dependency) is enough.
+Each result is preceded by the `--` comment above the query in the file.
 """
 
 from __future__ import annotations
@@ -17,11 +17,11 @@ import duckdb
 
 
 def iter_statements(sql: str) -> Iterator[tuple[str, bool, str]]:
-    """(titre, est_une_requête, sql nettoyé) pour chaque instruction du fichier.
+    """(title, is_query, cleaned sql) for each statement of the file.
 
-    DuckDB rattache à une instruction le `;` et les commentaires qui la suivent :
-    on retire ce `;` (qui casserait `show()`) et on garde les commentaires comme
-    titre de l'instruction suivante.
+    DuckDB attaches to a statement the `;` and the comments that follow it: the `;` is
+    removed (it would break `show()`) and the comments become the title of the next
+    statement.
     """
     title = ""
     for statement in duckdb.extract_statements(sql):
@@ -35,7 +35,7 @@ def iter_statements(sql: str) -> Iterator[tuple[str, bool, str]]:
 
 
 def _title(comment_lines: list[str]) -> str:
-    """1re ligne utile du dernier paragraphe de commentaires (lignes `-- ----` ignorées)."""
+    """First meaningful line of the last comment paragraph (`-- ----` lines ignored)."""
     paragraph: list[str] = []
     for line in comment_lines:
         text = line.strip().lstrip("-").strip()
@@ -48,7 +48,7 @@ def _title(comment_lines: list[str]) -> str:
 
 def run(sql: str, con: duckdb.DuckDBPyConnection) -> None:
     for title, is_query, query in iter_statements(sql):
-        if not is_query:  # INSTALL, LOAD, CREATE… : on exécute sans rien afficher
+        if not is_query:  # INSTALL, LOAD, CREATE…: executed without printing anything
             con.execute(query)
             continue
         print(f"\n=== {title or 'Requête'} ===")
@@ -56,7 +56,7 @@ def run(sql: str, con: duckdb.DuckDBPyConnection) -> None:
 
 
 def main(path: str) -> None:
-    # La console Windows (cp1252) ne sait pas afficher les bordures des tableaux DuckDB.
+    # The Windows console (cp1252) cannot display DuckDB's table borders.
     sys.stdout.reconfigure(encoding="utf-8")
     run(Path(path).read_text(encoding="utf-8"), duckdb.connect())
 

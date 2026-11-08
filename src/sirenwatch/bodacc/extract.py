@@ -1,11 +1,11 @@
-"""Extraction des annonces BODACC de procédures collectives pour une date de parution.
+"""Extract the BODACC insolvency notices published on a given date.
 
-Écrit la réponse brute dans `raw/bodacc/date=YYYY-MM-DD/annonces.json`, sous la forme
-d'un tableau JSON des enregistrements renvoyés par l'API, dans l'ordre de l'API
-(tri par `id`). C'est exactement le format de l'endpoint d'export, et celui de
-`tests/fixtures/bodacc_collective_sample.json`. Voir README.md pour les choix.
+Writes the raw response to `raw/bodacc/date=YYYY-MM-DD/annonces.json`, as a JSON array
+of the records returned by the API, in API order (sorted by `id`). This is exactly the
+format of the export endpoint, and of `tests/fixtures/bodacc_collective_sample.json`.
+See README.md for the design decisions.
 
-Lancement manuel :  uv run --env-file .env python -m sirenwatch.bodacc.extract 2026-11-06
+Manual run:  uv run --env-file .env sirenwatch-extract 2026-11-06
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ DATASET = "annonces-commerciales"
 RECORDS_PATH = f"/catalog/datasets/{DATASET}/records"
 EXPORT_PATH = f"/catalog/datasets/{DATASET}/exports/json"
 
-PAGE_SIZE = 100  # maximum autorisé par l'endpoint `records`
-MAX_WINDOW = 10_000  # offset + limit ne peut pas dépasser cette valeur
+PAGE_SIZE = 100  # maximum allowed by the `records` endpoint
+MAX_WINDOW = 10_000  # offset + limit cannot exceed this value
 
 MAX_ATTEMPTS = 5
 BACKOFF_BASE_SECONDS = 2.0
@@ -44,15 +44,15 @@ Sleep = Callable[[float], None]
 
 
 class BodaccAPIError(RuntimeError):
-    """L'API n'a pas répondu correctement, même après les retries."""
+    """The API did not answer correctly, even after the retries."""
 
 
 class IncoherentExtractionError(RuntimeError):
-    """Le nombre d'annonces récupérées ne correspond pas au total annoncé par l'API."""
+    """The number of notices retrieved does not match the total announced by the API."""
 
 
 def build_where(date: datetime.date) -> str:
-    """Filtre ODSQL : procédures collectives parues à `date`."""
+    """ODSQL filter: insolvency notices published on `date`."""
     _check_date(date)
     return f"familleavis = \"collective\" AND dateparution = date'{date.isoformat()}'"
 
@@ -65,11 +65,11 @@ def fetch_annonces(
     max_window: int = MAX_WINDOW,
     sleep: Sleep = time.sleep,
 ) -> list[Record]:
-    """Récupère toutes les annonces de procédures collectives parues à `date`.
+    """Fetch all the insolvency notices published on `date`.
 
-    Endpoint paginé `records` par pages de `page_size`. Si le total dépasse la
-    fenêtre maximale de pagination (`offset + limit <= 10 000`), bascule sur
-    l'endpoint d'export, qui renvoie tout en une réponse.
+    Paginated `records` endpoint, `page_size` records per page. If the total exceeds the
+    pagination window (`offset + limit <= 10,000`), fall back to the export endpoint,
+    which returns everything in a single response.
     """
     base_params = {"where": build_where(date), "order_by": "id"}
 
@@ -102,10 +102,10 @@ def extract(
     *,
     sleep: Sleep = time.sleep,
 ) -> str:
-    """Extrait les annonces parues à `date` et les écrit dans `raw/`. Renvoie la clé écrite.
+    """Extract the notices published on `date` and write them to `raw/`. Return the key.
 
-    Idempotent : relancer la même date réécrit le même objet. Une date sans annonce
-    produit un tableau vide `[]`, qui est une partition valide.
+    Idempotent: re-running the same date rewrites the same object. A date without
+    notices produces an empty array `[]`, which is a valid partition.
     """
     _check_date(date)
     storage = storage or Storage.from_settings(load_settings())
@@ -130,7 +130,7 @@ def make_http_client() -> httpx.Client:
     return httpx.Client(base_url=BASE_URL, timeout=TIMEOUT, headers={"User-Agent": USER_AGENT})
 
 
-# --- HTTP avec retries ----------------------------------------------------------
+# --- HTTP with retries ------------------------------------------------------------
 
 
 def _get_json(
@@ -141,11 +141,11 @@ def _get_json(
     sleep: Sleep,
     max_attempts: int = MAX_ATTEMPTS,
 ) -> Any:
-    """GET avec retries et backoff exponentiel.
+    """GET with retries and exponential backoff.
 
-    On réessaie sur ce qui peut être transitoire : erreurs réseau et timeouts,
-    429 (trop de requêtes) et 5xx. Une autre erreur 4xx signale une requête
-    invalide : réessayer ne changerait rien, on échoue tout de suite.
+    Retries what may be transient: network errors and timeouts, 429 (too many requests)
+    and 5xx. Any other 4xx means an invalid request: retrying would not help, so it
+    fails immediately.
     """
     for attempt in range(1, max_attempts + 1):
         try:
@@ -178,12 +178,12 @@ def _get_json(
 
 
 def _backoff(attempt: int) -> float:
-    """2 s, 4 s, 8 s, 16 s… plafonné à 60 s."""
+    """2 s, 4 s, 8 s, 16 s… capped at 60 s."""
     return min(BACKOFF_BASE_SECONDS * 2 ** (attempt - 1), BACKOFF_MAX_SECONDS)
 
 
 def _retry_after(response: httpx.Response) -> float | None:
-    """Délai demandé par le serveur (en-tête Retry-After en secondes), s'il est fourni."""
+    """Delay requested by the server (Retry-After header, in seconds), if any."""
     value = response.headers.get("Retry-After", "")
     try:
         return min(max(float(value), 0.0), BACKOFF_MAX_SECONDS)
@@ -191,11 +191,11 @@ def _retry_after(response: httpx.Response) -> float | None:
         return None
 
 
-# --- contrôles ----------------------------------------------------------------
+# --- checks ---------------------------------------------------------------------
 
 
 def _check_coherence(records: list[Record], total: int) -> None:
-    """Détecte une pagination incohérente (jeu de données modifié entre deux pages)."""
+    """Detect inconsistent pagination (dataset modified between two pages)."""
     ids = [r.get("id") for r in records]
     if len(records) != total or len(set(ids)) != len(ids):
         raise IncoherentExtractionError(

@@ -1,12 +1,12 @@
-"""Lecture de la configuration depuis les variables d'environnement.
+"""Configuration read from environment variables.
 
-Tout passe par l'environnement : `.env` en local (chargé par Docker Compose dans les
-conteneurs, ou par `uv run --env-file .env` sur le poste), variables du runtime en
-production. Aucune valeur par défaut ne contient de secret.
+Everything comes from the environment: `.env` locally (loaded by Docker Compose in the
+containers, or by `uv run --env-file .env` on the host), runtime variables in
+production. No default value holds a secret.
 
-Les identifiants S3 ne sont volontairement pas lus ici : boto3 les trouve tout seul
-via sa chaîne standard (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, profil, rôle IAM).
-Passer de MinIO à S3 réel ne demande donc que de changer des variables.
+S3 credentials are deliberately not read here: boto3 finds them through its standard
+chain (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, profile, IAM role). Moving from MinIO
+to real S3 therefore only means changing variables.
 """
 
 from __future__ import annotations
@@ -23,22 +23,22 @@ DEFAULT_AWS_REGION = "us-east-1"
 
 
 class ConfigError(RuntimeError):
-    """Configuration absente ou invalide."""
+    """Missing or invalid configuration."""
 
 
 @dataclass(frozen=True)
 class Settings:
     s3_bucket: str
-    # None = endpoint AWS par défaut ; une URL = stockage compatible S3 (MinIO).
+    # None = default AWS endpoint; a URL = S3-compatible storage (MinIO).
     s3_endpoint_url: str | None
     aws_region: str
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
-    """Construit les réglages à partir de `env` (par défaut : `os.environ`).
+    """Build the settings from `env` (default: `os.environ`).
 
-    Passer un dictionnaire explicite rend la fonction testable sans toucher à
-    l'environnement du processus.
+    Passing an explicit mapping makes the function testable without touching the
+    process environment.
     """
     env = os.environ if env is None else env
 
@@ -59,7 +59,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
 
 
 def _clean(value: str | None) -> str | None:
-    """Traite une variable vide (`VAR=` dans .env) comme absente."""
+    """Treat an empty variable (`VAR=` in .env) as missing."""
     if value is None:
         return None
     value = value.strip()

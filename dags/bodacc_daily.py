@@ -1,15 +1,15 @@
 """
 ### bodacc_daily
 
-Collecte quotidienne des annonces BODACC de **procédures collectives**.
+Daily collection of BODACC **insolvency notices** (procédures collectives).
 
-`extract` → `transform` → `validate`, pour la date de parution **D** = date logique du run :
+`extract` → `transform` → `validate`, for publication date **D** = the run's logical date:
 
-- `extract` : API BODACC → `raw/bodacc/date=D/annonces.json`
-- `transform` : `raw/` → `clean/bodacc/date=D/annonces.parquet`
-- `validate` : contrôles qualité ; fait échouer le run si KO
+- `extract`: BODACC API → `raw/bodacc/date=D/annonces.json`
+- `transform`: `raw/` → `clean/bodacc/date=D/annonces.parquet`
+- `validate`: quality checks; fails the run if a check fails
 
-Toute la logique est dans le paquet `sirenwatch` ; ce fichier ne fait que relier les tâches.
+All the logic lives in the `sirenwatch` package; this file only wires the tasks together.
 """
 
 from __future__ import annotations
@@ -19,29 +19,30 @@ import datetime
 import pendulum
 from airflow.sdk import CronTriggerTimetable, dag, task
 
-# Pas d'import de `sirenwatch` ici, au niveau du module : le dag-processor exécute ce
-# fichier toutes les ~30 s pour lire la structure du DAG. Les imports du code métier
-# sont faits dans les tâches, donc seulement à l'exécution.
+# No `sirenwatch` import here, at module level: the DAG processor executes this file
+# every ~30 s to read the DAG structure. Business code is imported inside the tasks,
+# so only when they run.
 
 
 @dag(
     dag_id="bodacc_daily",
-    # Tous les jours à 10:00 UTC, week-end compris (le BODACC paraît parfois le samedi
-    # ou le dimanche). La parution du jour D est chargée vers 06:00-07:00 UTC : 10:00
-    # laisse de la marge.
-    # CronTriggerTimetable (comportement par défaut d'un cron en Airflow 3) : la date
-    # logique d'un run EST son heure de déclenchement. Le run du 2026-11-06 10:00 UTC
-    # traite donc la parution du 2026-11-06, pas celle de la veille.
+    # Every day at 10:00 UTC, weekends included (the BODACC sometimes publishes on
+    # Saturday or Sunday). Day D's publication is loaded around 06:00-07:00 UTC: 10:00
+    # leaves a margin.
+    # CronTriggerTimetable (the default for a cron in Airflow 3): a run's logical date
+    # IS its trigger time. The 2026-11-06 10:00 UTC run therefore processes the
+    # 2026-11-06 publication, not the previous day's.
     schedule=CronTriggerTimetable("0 10 * * *", timezone="UTC"),
-    # catchup : à l'activation, Airflow crée les runs manquants depuis start_date
-    # (ici une semaine). L'historique plus ancien se charge avec `make backfill`.
+    # catchup: when the DAG is enabled, Airflow creates the missing runs since the
+    # latest run, or since start_date (here one week). Older history is loaded with
+    # `make backfill`.
     start_date=pendulum.datetime(2026, 11, 1, tz="UTC"),
     catchup=True,
-    # Au plus 3 dates en parallèle : ~20 requêtes par date, l'API n'est pas saturée.
+    # At most 3 dates in parallel: ~20 requests per date, the API is not overloaded.
     max_active_runs=3,
     default_args={
-        # extract réessaie déjà chaque requête HTTP ; ces retries Airflow couvrent
-        # les pannes plus longues (API ou MinIO indisponibles plusieurs minutes).
+        # extract already retries each HTTP request; these Airflow retries cover longer
+        # outages (API or MinIO unavailable for several minutes).
         "retries": 2,
         "retry_delay": datetime.timedelta(minutes=5),
     },
@@ -49,17 +50,17 @@ from airflow.sdk import CronTriggerTimetable, dag, task
     doc_md=__doc__,
 )
 def bodacc_daily():
-    # `ds` (date logique, "YYYY-MM-DD") et `ti` (instance de tâche) sont injectés
-    # par Airflow parce que les paramètres portent ces noms de variables de contexte.
+    # `ds` (logical date, "YYYY-MM-DD") and `ti` (task instance) are injected by Airflow
+    # because the parameters are named after these context variables.
 
     @task
     def extract(ds: str | None = None, ti=None) -> dict[str, str]:
         from sirenwatch.bodacc.extract import extract as extract_day
 
         raw_key = extract_day(datetime.date.fromisoformat(ds))
-        # Horodatage de l'extraction = début de cette tâche, fourni par Airflow (le
-        # code métier ne lit jamais l'horloge). Transmis à transform par XCom : un
-        # petit dictionnaire, pas les données, qui transitent par MinIO.
+        # Extraction timestamp = start of this task, provided by Airflow (the business
+        # code never reads the clock). Passed to transform via XCom: a small dict, not
+        # the data, which goes through MinIO.
         return {"raw_key": raw_key, "extracted_at": ti.start_date.isoformat()}
 
     @task
@@ -76,7 +77,7 @@ def bodacc_daily():
         from sirenwatch.bodacc.validate import validate as validate_day
 
         report = validate_day(datetime.date.fromisoformat(ds))
-        # Résumé renvoyé en XCom : visible dans l'interface, onglet XCom de la tâche.
+        # Summary returned as XCom: visible in the UI, in the task's XCom tab.
         return {
             "clean_key": clean_key,
             "row_count": report.row_count,

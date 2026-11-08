@@ -1,4 +1,4 @@
-"""Tests de storage.py sur un S3 simulé en mémoire (moto) : aucun appel réseau."""
+"""Tests for storage.py on an in-memory simulated S3 (moto): no network calls."""
 
 import datetime
 
@@ -15,7 +15,7 @@ D = datetime.date(2026, 11, 5)
 
 @pytest.fixture
 def storage(monkeypatch):
-    # Faux identifiants : moto intercepte les appels, mais boto3 exige des clés.
+    # Fake credentials: moto intercepts the calls, but boto3 requires keys.
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     with mock_aws():
@@ -48,12 +48,12 @@ def test_partition_key_nom_de_fichier_invalide(filename):
 
 
 def test_partition_key_refuse_un_datetime():
-    # Un datetime porte une heure : la partition doit dépendre de la date seule.
+    # A datetime carries a time of day: the partition must depend on the date only.
     with pytest.raises(TypeError):
         partition_key("raw", "bodacc", datetime.datetime(2026, 11, 5, 8, 0), "annonces.json")
 
 
-# --- lecture / écriture ------------------------------------------------------
+# --- read / write ------------------------------------------------------------
 
 
 def test_ecrire_puis_relire(storage):
@@ -64,7 +64,7 @@ def test_ecrire_puis_relire(storage):
 
 
 def test_reecrire_remplace_sans_doublon(storage):
-    # Idempotence : relancer une date réécrit la même clé.
+    # Idempotence: re-running a date rewrites the same key.
     key = partition_key("raw", "bodacc", D, "annonces.json")
     storage.write_bytes(key, b"v1")
     storage.write_bytes(key, b"v2")
@@ -73,7 +73,7 @@ def test_reecrire_remplace_sans_doublon(storage):
 
 
 def test_objet_vide_autorise(storage):
-    # Une date sans annonce doit pouvoir produire une partition valide.
+    # A date without notices must be able to produce a valid partition.
     key = partition_key("raw", "bodacc", D, "annonces.json")
     storage.write_bytes(key, b"")
     assert storage.read_bytes(key) == b""
@@ -114,7 +114,7 @@ def test_delete(storage):
     storage.write_bytes("raw/x.json", b"[]")
     storage.delete("raw/x.json")
     assert not storage.exists("raw/x.json")
-    storage.delete("raw/x.json")  # supprimer une clé absente n'est pas une erreur
+    storage.delete("raw/x.json")  # deleting a missing key is not an error
 
 
 # --- make_client ---------------------------------------------------------------

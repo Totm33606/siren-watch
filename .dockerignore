@@ -1,4 +1,4 @@
-# Contexte de build minimal. Surtout : aucun secret dans l'image.
+# Minimal build context. Above all: no secrets in the image.
 .env
 .env.*
 !.env.example

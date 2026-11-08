@@ -1,1 +1,1 @@
-"""Source BODACC (voir README.md de ce dossier)."""
+"""BODACC source (see the README.md of this folder)."""

@@ -1,8 +1,8 @@
-"""Accès au stockage objet (S3 / MinIO), uniquement via boto3.
+"""Object storage access (S3 / MinIO), through boto3 only.
 
-C'est le seul module qui parle au stockage. Le reste du code manipule des clés
-(`raw/bodacc/date=2026-11-05/annonces.json`) et des octets, sans savoir s'il y a
-MinIO ou S3 derrière.
+This is the only module that talks to the storage. The rest of the code handles keys
+(`raw/bodacc/date=2026-11-05/annonces.json`) and bytes, without knowing whether MinIO or
+S3 is behind them.
 """
 
 from __future__ import annotations
@@ -22,11 +22,10 @@ ZONES: tuple[Zone, ...] = ("raw", "clean")
 
 
 def partition_key(zone: Zone, source: str, date: datetime.date, filename: str) -> str:
-    """Clé d'un fichier dans une partition journalière.
+    """Key of a file in a daily partition.
 
-    Format "Hive" `cle=valeur` : DuckDB (`hive_partitioning`), Spark ou Athena
-    reconnaissent `date=…` comme une colonne virtuelle et peuvent ne lire que les
-    partitions utiles.
+    Hive-style `key=value` format: DuckDB (`hive_partitioning`), Spark or Athena
+    recognise `date=…` as a virtual column and can read only the partitions they need.
 
     >>> partition_key("raw", "bodacc", datetime.date(2026, 11, 5), "annonces.json")
     'raw/bodacc/date=2026-11-05/annonces.json'
@@ -36,23 +35,24 @@ def partition_key(zone: Zone, source: str, date: datetime.date, filename: str) -
     for name, value in (("source", source), ("filename", filename)):
         if not value or "/" in value:
             raise ValueError(f"{name} invalide : {value!r}")
-    # isoformat() et non str() : refuse explicitement un datetime (qui a une heure).
+    # A datetime is rejected explicitly: it carries a time of day, and the partition
+    # must depend on the date only.
     if isinstance(date, datetime.datetime) or not isinstance(date, datetime.date):
         raise TypeError(f"date doit être un datetime.date, reçu {type(date).__name__}")
     return f"{zone}/{source}/date={date.isoformat()}/{filename}"
 
 
 def make_client(settings: Settings) -> S3Client:
-    """Client S3 configuré pour MinIO ou S3 réel selon `settings.s3_endpoint_url`."""
+    """S3 client configured for MinIO or real S3, depending on `settings.s3_endpoint_url`."""
     s3_options = {}
     if settings.s3_endpoint_url:
-        # MinIO : adressage "path" (http://minio:9000/sirenwatch/cle). En adressage
-        # "virtual host" par défaut, boto3 viserait http://sirenwatch.minio:9000,
-        # un nom DNS qui n'existe pas dans le réseau Docker.
+        # MinIO: "path" addressing (http://minio:9000/sirenwatch/key). With the default
+        # "virtual host" addressing, boto3 would target http://sirenwatch.minio:9000, a
+        # host name that does not exist on the Docker network.
         s3_options["addressing_style"] = "path"
     config = Config(
         region_name=settings.aws_region,
-        # Retries de boto3 sur les erreurs réseau, 5xx et throttling (SlowDown).
+        # boto3 retries on network errors, 5xx and throttling (SlowDown).
         retries={"max_attempts": 5, "mode": "standard"},
         s3=s3_options,
     )
@@ -60,7 +60,7 @@ def make_client(settings: Settings) -> S3Client:
 
 
 class Storage:
-    """Lecture et écriture d'objets dans un bucket unique."""
+    """Reads and writes objects in a single bucket."""
 
     def __init__(self, client: S3Client, bucket: str) -> None:
         self._client = client
@@ -73,16 +73,16 @@ class Storage:
     def write_bytes(
         self, key: str, data: bytes, content_type: str = "application/octet-stream"
     ) -> None:
-        """Écrit (ou remplace) l'objet `key`.
+        """Write (or replace) object `key`.
 
-        Un PUT S3 est atomique : un lecteur voit l'ancienne ou la nouvelle version,
-        jamais un fichier à moitié écrit. Réécrire la même clé est donc le moyen
-        simple de rendre une tâche idempotente.
+        An S3 PUT is atomic: a reader sees the old or the new version, never a
+        half-written file. Rewriting the same key is therefore the simple way to make a
+        task idempotent.
         """
         self._client.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type)
 
     def read_bytes(self, key: str) -> bytes:
-        """Lit l'objet `key`. Lève FileNotFoundError s'il n'existe pas."""
+        """Read object `key`. Raise FileNotFoundError if it does not exist."""
         try:
             response = self._client.get_object(Bucket=self.bucket, Key=key)
         except ClientError as exc:
@@ -101,7 +101,7 @@ class Storage:
         return True
 
     def list_keys(self, prefix: str = "") -> list[str]:
-        """Clés commençant par `prefix`, triées. Gère la pagination (1000 clés par page)."""
+        """Keys starting with `prefix`, sorted. Handles pagination (1,000 keys per page)."""
         paginator = self._client.get_paginator("list_objects_v2")
         keys: list[str] = []
         for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
@@ -109,7 +109,7 @@ class Storage:
         return sorted(keys)
 
     def delete(self, key: str) -> None:
-        """Supprime `key` (sans erreur si la clé n'existe pas, comme S3)."""
+        """Delete `key` (no error if the key does not exist, as in S3)."""
         self._client.delete_object(Bucket=self.bucket, Key=key)
 
 

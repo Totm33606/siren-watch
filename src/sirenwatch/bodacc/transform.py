@@ -1,11 +1,11 @@
-"""Transformation `raw/` (JSON brut de l'API) -> `clean/` (Parquet typé).
+"""Transformation `raw/` (raw API JSON) -> `clean/` (typed Parquet).
 
-Une ligne par annonce. Les règles de correspondance sont documentées dans README.md
-(section « Correspondance retenue avec le schéma clean/ »).
+One row per notice. The mapping rules are documented in README.md (section "Mapping to
+the `clean/` schema").
 
-Le cœur est `transform_records()`, une fonction pure (liste d'annonces -> table Arrow)
-testée sans stockage ni réseau. `transform()` ne fait que lire `raw/`, appeler cette
-fonction et écrire `clean/`.
+The core is `transform_records()`, a pure function (list of notices -> Arrow table)
+tested without storage or network. `transform()` only reads `raw/`, calls that function
+and writes `clean/`.
 """
 
 from __future__ import annotations
@@ -29,9 +29,9 @@ log = logging.getLogger(__name__)
 TYPES_PROCEDURE = ("sauvegarde", "redressement", "liquidation", "indetermine")
 EVENEMENTS = ("ouverture", "conversion", "plan", "cloture", "creances", "sanction", "autre")
 
-# Schéma explicite : on ne laisse pas pyarrow deviner les types (une colonne
-# entièrement nulle un jour serait typée `null`, et les partitions deviendraient
-# incompatibles entre elles). `nullable=False` documente ce que validate vérifie.
+# Explicit schema: pyarrow is not left to infer the types (a column that is entirely
+# null on some day would be typed `null`, making partitions incompatible with each
+# other). `nullable=False` documents what validate checks.
 CLEAN_SCHEMA = pa.schema(
     [
         pa.field("id_annonce", pa.string(), nullable=False),
@@ -61,45 +61,45 @@ _SIREN_RE = re.compile(r"\d{9}")
 
 
 def normalize_siren(value: str | None) -> str | None:
-    """Retire espaces et espaces insécables : '814 811 493' -> '814811493'."""
+    """Remove spaces and non-breaking spaces: '814 811 493' -> '814811493'."""
     if value is None:
         return None
     return re.sub(r"\s", "", value)
 
 
 def is_valid_siren(value: str | None) -> bool:
-    """9 chiffres et clé de Luhn correcte (toutes les valeurs observées la respectent)."""
+    """9 digits and a correct Luhn check digit (every observed value passes it)."""
     if value is None or not _SIREN_RE.fullmatch(value):
         return False
     total = 0
     for i, ch in enumerate(reversed(value)):
         d = int(ch)
-        if i % 2:  # un chiffre sur deux en partant de la droite est doublé
+        if i % 2:  # every second digit from the right is doubled
             d = d * 2 - 9 if d * 2 > 9 else d * 2
         total += d
     return total % 10 == 0
 
 
-# --- classification des natures de jugement -------------------------------------
+# --- classification of court-decision labels -------------------------------------
 
 
 def _fold(text: str) -> str:
-    """Minuscules sans accents : 'Clôture' -> 'cloture'. Rend les règles robustes."""
+    """Lowercase without accents: 'Clôture' -> 'cloture'. Makes the rules robust."""
     decomposed = unicodedata.normalize("NFKD", text.lower())
     return "".join(c for c in decomposed if not unicodedata.combining(c))
 
 
 def classify_nature(nature: str | None) -> tuple[str, str]:
-    """(type_procedure, evenement) à partir du libellé `jugement.nature`.
+    """(type_procedure, evenement) from the `jugement.nature` label.
 
-    Règles par mots-clés, de la plus spécifique à la plus générale. Un libellé
-    inconnu donne ('indetermine', 'autre') : validate liste ces libellés.
+    Keyword rules, from the most specific to the most general. An unknown label gives
+    ('indetermine', 'autre'): validate lists these labels.
     """
     n = _fold(nature or "")
 
-    # Procédure : la plus avancée citée l'emporte ("résolution du plan de sauvegarde
-    # et la liquidation judiciaire" -> liquidation). Les clôtures pour insuffisance
-    # d'actif ou extinction du passif sont des modes de clôture de la liquidation.
+    # Procedure: the most advanced one mentioned wins ("résolution du plan de sauvegarde
+    # et la liquidation judiciaire" -> liquidation). Closings for insufficient assets or
+    # extinguished liabilities are ways of closing a liquidation.
     if "liquidation" in n or "insuffisance d'actif" in n or "extinction du passif" in n:
         procedure = "liquidation"
     elif "redressement" in n:
@@ -109,10 +109,10 @@ def classify_nature(nature: str | None) -> tuple[str, str]:
     else:
         procedure = "indetermine"
 
-    # Événement : "créances" avant "ouverture" ("Liste des créances nées après le
-    # jugement d'ouverture…" est un dépôt de créances, pas une ouverture).
+    # Stage: "créances" is checked before "ouverture" ("Liste des créances nées après le
+    # jugement d'ouverture…" is a filing of claims, not an opening).
     if "retractation" in n:
-        # "Rétractation de jugement d'ouverture…" annule une ouverture : pas une ouverture.
+        # "Rétractation de jugement d'ouverture…" cancels an opening: not an opening.
         evenement = "autre"
     elif "creance" in n or "repartition" in n:
         evenement = "creances"
@@ -131,11 +131,11 @@ def classify_nature(nature: str | None) -> tuple[str, str]:
     return procedure, evenement
 
 
-# --- annonce -> ligne -------------------------------------------------------------
+# --- notice -> row ------------------------------------------------------------------
 
 
 def _personnes(record: dict[str, Any]) -> list[dict[str, Any]]:
-    """`listepersonnes` est une chaîne JSON ; `personne` est un objet OU une liste."""
+    """`listepersonnes` is a JSON string; `personne` is an object OR a list."""
     if not record.get("listepersonnes"):
         return []
     personne = json.loads(record["listepersonnes"]).get("personne") or []
@@ -143,7 +143,7 @@ def _personnes(record: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _rm_numbers(personnes: list[dict[str, Any]]) -> list[str]:
-    """Numéros du répertoire des métiers (artisans) : ce sont des SIREN."""
+    """Trades register numbers (craftspeople): these are SIRENs."""
     return [
         p["inscriptionRM"]["numeroIdentificationRM"]
         for p in personnes
@@ -166,13 +166,13 @@ def record_to_row(record: dict[str, Any], date_extraction: datetime.datetime) ->
     registre = record.get("registre") or []
     rm = _rm_numbers(personnes)
 
-    # siren_brut : la valeur source telle quelle, jamais corrigée.
+    # siren_brut: the source value as is, never corrected.
     siren_brut = registre[0] if registre else (rm[0] if rm else None)
     siren_norm = normalize_siren(siren_brut)
     siren = siren_norm if is_valid_siren(siren_norm) else None
 
-    # sirens : tous les SIREN valides de l'annonce (RCS puis RM), sans doublon,
-    # dans l'ordre de la source. `registre` liste chaque SIREN deux fois.
+    # sirens: all the valid SIRENs of the notice (RCS, then RM), deduplicated, in source
+    # order. `registre` lists each SIREN twice.
     sirens: list[str] = []
     for value in [*registre, *rm]:
         s = normalize_siren(value)
@@ -207,19 +207,19 @@ def record_to_row(record: dict[str, Any], date_extraction: datetime.datetime) ->
 def transform_records(
     records: list[dict[str, Any]], date_extraction: datetime.datetime
 ) -> pa.Table:
-    """Annonces brutes -> table Arrow conforme à CLEAN_SCHEMA (une ligne par annonce)."""
+    """Raw notices -> Arrow table matching CLEAN_SCHEMA (one row per notice)."""
     if date_extraction.tzinfo is None:
         raise ValueError("date_extraction doit porter un fuseau horaire (UTC conseillé)")
     rows = [record_to_row(r, date_extraction) for r in records]
     return pa.Table.from_pylist(rows, schema=CLEAN_SCHEMA)
 
 
-# --- E/S -------------------------------------------------------------------------
+# --- I/O ---------------------------------------------------------------------------
 
 
 def table_to_parquet_bytes(table: pa.Table) -> bytes:
     buffer = io.BytesIO()
-    # zstd : bien plus compact que snappy pour un coût CPU négligeable ici ; lu par DuckDB.
+    # zstd: much more compact than snappy, for a negligible CPU cost here; read by DuckDB.
     pq.write_table(table, buffer, compression="zstd")
     return buffer.getvalue()
 
@@ -233,10 +233,10 @@ def transform(
     date_extraction: datetime.datetime,
     storage: Storage | None = None,
 ) -> str:
-    """Lit `raw/` pour `date`, écrit `clean/`. Renvoie la clé écrite.
+    """Read `raw/` for `date`, write `clean/`. Return the key written.
 
-    `date_extraction` est fourni par l'appelant (le DAG), jamais lu sur l'horloge.
-    Idempotent : relancer réécrit le même objet. `[]` produit un Parquet vide valide.
+    `date_extraction` is provided by the caller (the DAG), never read from the clock.
+    Idempotent: re-running rewrites the same object. `[]` gives a valid empty Parquet.
     """
     if isinstance(date, datetime.datetime) or not isinstance(date, datetime.date):
         raise TypeError(f"date doit être un datetime.date, reçu {type(date).__name__}")
